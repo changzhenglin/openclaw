@@ -1535,6 +1535,24 @@ export async function handleToolExecutionEnd(
     sanitizedResult,
   });
 
+  // ①b（AgentOS card-to-p1）：emit agent.tool_result event，把 tool result（含 details）
+  // 暴露给 WS 客户端。新 stream "tool_result" 绕过 server-chat.ts 对 stream:"tool" 的
+  // toolVerbose/result-stripping（toolVerbose!=="full" 时 delete data.result，见 server-chat.ts:1051）。
+  // sanitizedResult 保 details（sanitizeToolResult→redactSensitiveFieldValue 只 redact
+  // sensitive-keyed 字段，card 字段 card_id/template/body 非敏感保留）。
+  // AgentEventSchema.data 已 open Record（agent.ts:57），复用 event:"agent"（hello-ok 已 advertise）。
+  emitAgentEvent({
+    runId: ctx.params.runId,
+    stream: "tool_result",
+    data: {
+      toolName,
+      toolCallId,
+      result: sanitizedResult,
+      isError: isToolError,
+    },
+    ...(ctx.params.sessionKey ? { sessionKey: ctx.params.sessionKey } : {}),
+  });
+
   // Run after_tool_call plugin hook (fire-and-forget)
   const hookRunnerAfter = ctx.hookRunner ?? (await loadHookRunnerGlobal()).getGlobalHookRunner();
   if (hookRunnerAfter?.hasHooks("after_tool_call")) {

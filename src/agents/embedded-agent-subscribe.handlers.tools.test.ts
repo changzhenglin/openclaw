@@ -1990,3 +1990,56 @@ describe("control UI credential redaction (issue #72283)", () => {
     expect(emittedResult).toContain("OPENROUTER_API_KEY=");
   });
 });
+
+describe("handleToolExecutionEnd agentos_a2ui_card tool_result event (①b)", () => {
+  it("emits stream:tool_result event with tool result details preserved", async () => {
+    resetAgentEventsForTest();
+    const events: Array<{ stream?: string; data?: Record<string, unknown> }> = [];
+    registerAgentEventListener((evt) => {
+      events.push(evt as never);
+    });
+    const { ctx } = createTestContext();
+
+    await handleToolExecutionStart(
+      ctx as never,
+      {
+        type: "tool_execution_start",
+        toolName: "agentos_a2ui_card",
+        toolCallId: "call-a2ui-1",
+        args: { text: "休息提醒" },
+      } as never,
+    );
+    await handleToolExecutionEnd(
+      ctx as never,
+      {
+        type: "tool_execution_end",
+        toolName: "agentos_a2ui_card",
+        toolCallId: "call-a2ui-1",
+        isError: false,
+        result: {
+          content: [{ type: "text", text: "card body" }],
+          details: {
+            card_id: "card_x",
+            template: "generic_card",
+            body: "card body",
+            actions: [],
+            inputs: [],
+            render_target_hint: "lvgl",
+            privacy_level: "public",
+          },
+        },
+      } as never,
+    );
+
+    const ev = requireEvent(events, (e) => e.stream === "tool_result", "stream:tool_result");
+    const data = requireRecord(ev.data, "tool_result data");
+    expect(data.toolName).toBe("agentos_a2ui_card");
+    expect(data.toolCallId).toBe("call-a2ui-1");
+    const result = requireRecord(data.result, "tool_result result");
+    const details = requireRecord(result.details, "result.details");
+    // codex #17：真 card shape，template/card_id 保（sanitizeToolResult 只 redact sensitive-keyed 字段）
+    expect(details.template).toBe("generic_card");
+    expect(details.card_id).toBe("card_x");
+    expect(details.body).toBe("card body");
+  });
+});
