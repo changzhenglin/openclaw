@@ -1541,16 +1541,25 @@ export async function handleToolExecutionEnd(
   // sanitizedResult 保 details（sanitizeToolResult→redactSensitiveFieldValue 只 redact
   // sensitive-keyed 字段，card 字段 card_id/template/body 非敏感保留）。
   // AgentEventSchema.data 已 open Record（agent.ts:57），复用 event:"agent"（hello-ok 已 advertise）。
-  // codex [P1]-2：只对 agentos_a2ui_card tool emit（避免对所有 tool 暴露 sanitized 结果——
-  // stdout/paths/fetched content 等超 card-to-p1 scope）。其他 tool result 不经此 stream 暴露。
+  // card-to-p1 ①b：对 agentos_a2ui_card tool emit `tool_result` event，把结构化 card
+  // details 暴露给 WS 客户端（bridge 提 data.result.details）。新 stream "tool_result"
+  // 绕过 server-chat.ts 对 stream:"tool" 的 toolVerbose/result-stripping（toolVerbose!=="full"
+  // 时 delete data.result，见 server-chat.ts:1051）。
+  // 数据边界（code-review codex #2）：只对 agentos_a2ui_card emit（非所有 tool），且只发
+  // result.details（结构化 AgentOSA2uiCard：card_id/template/body/...），不发整 sanitizedResult
+  //（含 content/任意字段）。details 经 sanitizeToolResult（redactSensitiveFieldValue 只 redact
+  // sensitive-keyed 字段，card 字段非敏感保留）。AgentEventSchema.data 已 open Record（agent.ts:57）。
+  // 已知局限（codex #1，upstream follow-up）：此 stream 经 sendAgentPayload 广播给所有 run 订阅者
+  //（非 gated tool 路径）。PoC 接受（AgentOS hybrid bridge 是唯一 WS 客户端）；上游化需 gated contract。
   if (rawToolName === "agentos_a2ui_card") {
+    const sanitizedRecord = sanitizedResult as Record<string, unknown> | null;
     emitAgentEvent({
       runId: ctx.params.runId,
       stream: "tool_result",
       data: {
         toolName,
         toolCallId,
-        result: sanitizedResult,
+        result: { details: sanitizedRecord?.details },
         isError: isToolError,
       },
       ...(ctx.params.sessionKey ? { sessionKey: ctx.params.sessionKey } : {}),

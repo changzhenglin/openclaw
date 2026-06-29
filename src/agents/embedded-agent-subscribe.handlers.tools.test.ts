@@ -2042,4 +2042,34 @@ describe("handleToolExecutionEnd agentos_a2ui_card tool_result event (①b)", ()
     expect(details.card_id).toBe("card_x");
     expect(details.body).toBe("card body");
   });
+
+  it("does NOT emit stream:tool_result for non-a2ui_card tools (codex #3)", async () => {
+    resetAgentEventsForTest();
+    const events: Array<{ stream?: string; data?: Record<string, unknown> }> = [];
+    registerAgentEventListener((evt) => {
+      events.push(evt as never);
+    });
+    const { ctx } = createTestContext();
+    await handleToolExecutionStart(
+      ctx as never,
+      {
+        type: "tool_execution_start",
+        toolName: "web_search",
+        toolCallId: "call-ws-1",
+        args: { q: "x" },
+      } as never,
+    );
+    await handleToolExecutionEnd(
+      ctx as never,
+      {
+        type: "tool_execution_end",
+        toolName: "web_search",
+        toolCallId: "call-ws-1",
+        isError: false,
+        result: { content: [{ type: "text", text: "results" }], details: { hits: 3 } },
+      } as never,
+    );
+    const toolResultEvents = events.filter((e) => e.stream === "tool_result");
+    expect(toolResultEvents).toHaveLength(0);
+  });
 });
