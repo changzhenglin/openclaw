@@ -1541,17 +1541,21 @@ export async function handleToolExecutionEnd(
   // sanitizedResult 保 details（sanitizeToolResult→redactSensitiveFieldValue 只 redact
   // sensitive-keyed 字段，card 字段 card_id/template/body 非敏感保留）。
   // AgentEventSchema.data 已 open Record（agent.ts:57），复用 event:"agent"（hello-ok 已 advertise）。
-  emitAgentEvent({
-    runId: ctx.params.runId,
-    stream: "tool_result",
-    data: {
-      toolName,
-      toolCallId,
-      result: sanitizedResult,
-      isError: isToolError,
-    },
-    ...(ctx.params.sessionKey ? { sessionKey: ctx.params.sessionKey } : {}),
-  });
+  // codex [P1]-2：只对 agentos_a2ui_card tool emit（避免对所有 tool 暴露 sanitized 结果——
+  // stdout/paths/fetched content 等超 card-to-p1 scope）。其他 tool result 不经此 stream 暴露。
+  if (rawToolName === "agentos_a2ui_card") {
+    emitAgentEvent({
+      runId: ctx.params.runId,
+      stream: "tool_result",
+      data: {
+        toolName,
+        toolCallId,
+        result: sanitizedResult,
+        isError: isToolError,
+      },
+      ...(ctx.params.sessionKey ? { sessionKey: ctx.params.sessionKey } : {}),
+    });
+  }
 
   // Run after_tool_call plugin hook (fire-and-forget)
   const hookRunnerAfter = ctx.hookRunner ?? (await loadHookRunnerGlobal()).getGlobalHookRunner();
