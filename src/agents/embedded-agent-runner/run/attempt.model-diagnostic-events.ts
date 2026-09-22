@@ -17,6 +17,7 @@ import {
 } from "../../../infra/diagnostic-events.js";
 import {
   cloneDiagnosticContentValue,
+  resolveDiagnosticModelContentCapturePolicy,
   type DiagnosticModelContentCapturePolicy,
 } from "../../../infra/diagnostic-llm-content.js";
 import {
@@ -35,7 +36,9 @@ import type {
 } from "../../../plugins/hook-types.js";
 import type { HookRunner } from "../../../plugins/hooks.js";
 import type { StreamFn } from "../../runtime/index.js";
+import type { EmbeddedAgentExecutionPhase } from "../execution-phase.js";
 import { log } from "../logger.js";
+import type { EmbeddedRunContextWindowInfo } from "./types.js";
 
 export { diagnosticErrorCategory };
 
@@ -63,6 +66,72 @@ type ModelCallDiagnosticContext = {
    */
   resolveHookRunner?: () => HookRunner | null;
 };
+
+/**
+ * T5 乙案（Ruling-5・codex P2 merge 前置条件收尾）：attempt.ts wrap 位点的
+ * ModelCallDiagnosticContext 构造整体抽出为导出纯函数——resolveHookRunner 装配
+ * 分支（Ruling-187 丙案 F3 双语义）随迁至此成为可单测面；attempt.ts 改单行
+ * 调用＝纯重构零行为变化（nextCallId 计数器 per-call 新建，与原 attempt 局部
+ * diagnosticModelCallSeq 语义等价：每次 attempt 构造 ctx 时从 0 起）。
+ *
+ * resolveHookRunner 装配语义（原 attempt.ts:2899-2904 注释随迁）：仅当调用方
+ * （run.ts）显式供给 scopedHookRunner 时才装 resolver——undefined 保持既有
+ * fallback 全局语义（F3 兼容面）；供给则用 run 自身注册表 runner（覆盖免疫），
+ * null＝显式空 scope（不 fire 不 fallback）。
+ */
+export function buildModelCallDiagnosticContext(params: {
+  runId: string;
+  sessionKey?: string;
+  sessionId?: string;
+  provider: string;
+  modelId: string;
+  modelApi?: string;
+  transport?: string;
+  contextWindowInfo?: EmbeddedRunContextWindowInfo;
+  config?: unknown;
+  trace: DiagnosticTraceContext;
+  scopedHookRunner?: HookRunner | null;
+  onExecutionPhase?: (info: {
+    phase: EmbeddedAgentExecutionPhase;
+    provider?: string;
+    model?: string;
+    firstModelCallStarted?: boolean;
+  }) => void;
+}): ModelCallDiagnosticContext {
+  let modelCallSeq = 0;
+  return {
+    runId: params.runId,
+    ...(params.sessionKey && { sessionKey: params.sessionKey }),
+    ...(params.sessionId && { sessionId: params.sessionId }),
+    provider: params.provider,
+    model: params.modelId,
+    api: params.modelApi,
+    transport: params.transport,
+    ...(params.contextWindowInfo?.tokens
+      ? { contextTokenBudget: params.contextWindowInfo.tokens }
+      : {}),
+    ...(params.contextWindowInfo?.source
+      ? { contextWindowSource: params.contextWindowInfo.source }
+      : {}),
+    ...(params.contextWindowInfo?.referenceTokens
+      ? { contextWindowReferenceTokens: params.contextWindowInfo.referenceTokens }
+      : {}),
+    trace: params.trace,
+    contentCapture: resolveDiagnosticModelContentCapturePolicy(params.config),
+    nextCallId: () => `${params.runId}:model:${(modelCallSeq += 1)}`,
+    ...(params.scopedHookRunner !== undefined
+      ? { resolveHookRunner: () => params.scopedHookRunner ?? null }
+      : {}),
+    onStarted: () => {
+      params.onExecutionPhase?.({
+        phase: "model_call_started",
+        provider: params.provider,
+        model: params.modelId,
+        firstModelCallStarted: true,
+      });
+    },
+  };
+}
 
 type ModelCallEventBase = Omit<
   Extract<DiagnosticEventInput, { type: "model.call.started" }>,
