@@ -19,6 +19,13 @@
  *   仅计 legacy hooks（hook-runner-global.ts:50-53），typedHooks 不在口径内
  *   → 覆盖发生时无任何日志痕迹。
  *
+ * 【F4 迁移注记（plan-eng-review codex remedy・2026-09-22）】
+ * RED→GREEN 证据链主面已迁至 dispatch 可观察行为层：
+ * `src/agents/embedded-agent-runner/run/attempt.model-diagnostic-events.hook-scope.test.ts`
+ * （丙案修 dispatch 消费路径・不触碰全局覆盖行为→本文件断言在丙案落地后不会自然转绿）。
+ * 本文件降为机制记录面（document-the-bug：全局 runner last-wins 覆盖形态钉）——
+ * 丙案落地后按 SDD 首步裁量：改造为 preserve/覆盖机制回归断言，或删除。
+ *
  * 期望行为（修复后应 GREEN）：插件已注册的 typed hook 进入全局 runner 后，
  * 后续任意 scoped 再激活（gateway-bindable / 空 scope）不得静默丢弃（preserve/merge）。
  * 当前实现下断言失败 = 缺陷复现（RED）。
