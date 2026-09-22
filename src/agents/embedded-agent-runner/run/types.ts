@@ -11,6 +11,7 @@ import type { ContextEngine, ContextEnginePromptCacheInfo } from "../../../conte
 import type { DiagnosticTraceContext } from "../../../infra/diagnostic-trace-context.js";
 import type { AssistantMessage, Model } from "../../../llm/types.js";
 import type { PluginHookBeforeAgentStartResult } from "../../../plugins/hook-before-agent-start.types.js";
+import type { HookRunner } from "../../../plugins/hooks.js";
 import type { AgentHarnessTaskRuntimeScope } from "../../../tasks/agent-harness-task-runtime-scope.js";
 import type { AcceptedSessionSpawn } from "../../accepted-session-spawn.js";
 import type { ToolOutcomeObserver } from "../../agent-tools.before-tool-call.js";
@@ -61,6 +62,15 @@ export type EmbeddedRunAttemptParams = EmbeddedRunAttemptBase & {
   agentHarnessId?: string;
   /** OpenClaw-owned runtime policy prepared by the orchestrator for this attempt. */
   runtimePlan?: AgentRuntimePlan;
+  /**
+   * Run 自身注册表构建的 scoped hook runner（Ruling-187 丙案・捕获点 (b)）。
+   * 由 run.ts 在 ensureRuntimePluginsLoadedWithRegistry 后用共享 factory
+   * createHookRunnerWithGlobalOptions 自建并透传至此，wrap 位点供给
+   * resolveHookRunner，使 model_call dispatch 免疫第三方 scoped 激活对全局
+   * 单例的 last-wins 覆盖。undefined → dispatch fallback 全局（既有兼容面）；
+   * null → 显式空 scope，不 fire 不 fallback（F3 双语义）。
+   */
+  scopedHookRunner?: HookRunner | null;
   /** Host-issued scope for harnesses that mirror native child runs into task state. */
   agentHarnessTaskRuntimeScope?: AgentHarnessTaskRuntimeScope;
   /** Live observer called after wrapped tool outcomes are recorded. */

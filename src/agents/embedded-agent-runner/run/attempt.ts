@@ -2896,6 +2896,12 @@ export async function runEmbeddedAttempt(
           trace: runTrace,
           contentCapture: resolveDiagnosticModelContentCapturePolicy(params.config),
           nextCallId: () => `${params.runId}:model:${(diagnosticModelCallSeq += 1)}`,
+          // Ruling-187 丙案：仅当调用方（run.ts）显式供给 scopedHookRunner 时才装
+          // resolver——undefined 保持既有 fallback 全局语义（F3 兼容面）；供给则用
+          // run 自身注册表 runner（覆盖免疫），null＝显式空 scope（不 fire 不 fallback）。
+          ...(params.scopedHookRunner !== undefined
+            ? { resolveHookRunner: () => params.scopedHookRunner ?? null }
+            : {}),
           onStarted: () => {
             params.onExecutionPhase?.({
               phase: "model_call_started",

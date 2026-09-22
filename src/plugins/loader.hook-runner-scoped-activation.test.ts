@@ -1,5 +1,6 @@
 /**
- * hook-firing gap 复现 fixture（Ruling-187 T1・RED 基座）。
+ * hook-firing gap 机制记录 fixture（Ruling-187 T1 RED 基座 → Ruling-3 改造为
+ * document-the-bug 机制记录面：如实断言全局 runner last-wins 覆盖现状）。
  *
  * 生产时间线对照（evidence/latency-phase1-t2/2026-09-22/gateway-b3-debug.log）：
  * - 03:44:38 gateway 启动（startup 十插件 scope・cloud-ext 不在集内）
@@ -23,12 +24,14 @@
  * RED→GREEN 证据链主面已迁至 dispatch 可观察行为层：
  * `src/agents/embedded-agent-runner/run/attempt.model-diagnostic-events.hook-scope.test.ts`
  * （丙案修 dispatch 消费路径・不触碰全局覆盖行为→本文件断言在丙案落地后不会自然转绿）。
- * 本文件降为机制记录面（document-the-bug：全局 runner last-wins 覆盖形态钉）——
- * 丙案落地后按 SDD 首步裁量：改造为 preserve/覆盖机制回归断言，或删除。
  *
- * 期望行为（修复后应 GREEN）：插件已注册的 typed hook 进入全局 runner 后，
- * 后续任意 scoped 再激活（gateway-bindable / 空 scope）不得静默丢弃（preserve/merge）。
- * 当前实现下断言失败 = 缺陷复现（RED）。
+ * 【Ruling-3 改造（控制器裁决・2026-09-22）：已改造为机制记录面】
+ * 本文件两条原 RED 断言改造为 document-the-bug 机制记录断言——如实钉住现状
+ * last-wins 覆盖行为（gateway-bindable scoped 再激活 → 全局 runner 以新 scope 注册表
+ * 重建 → hasHooks=false）。丙案不改变全局覆盖行为本身（run 侧免疫走 dispatch 层
+ * resolver，钉在 hook-scope.test.ts）；保留机制记录的价值＝若未来有人改
+ * preserve/merge 语义，本文件会以断言失败提示行为变更。
+ * default-mode preserve 对照组保留为绿（现状正确行为回归钉）。
  */
 import { afterAll, afterEach, describe, expect, it } from "vitest";
 import { getGlobalHookRunner, resetGlobalHookRunner } from "./hook-runner-global.js";
@@ -69,7 +72,7 @@ function writePlainPlugin(id: string): TempPlugin {
 }
 
 describe("global hook runner across scoped re-activation (hook-firing gap)", () => {
-  it("RED 主机制：后续 gateway-bindable scoped 激活（不含 hook 插件）不得静默丢弃 model_call_ended", () => {
+  it("机制记录（Ruling-3・document-the-bug）：后续 gateway-bindable scoped 激活（不含 hook 插件）last-wins 重建全局 runner → hook 面丢失", () => {
     useNoBundledPlugins();
     const hookPlugin = writeEvidenceHookPlugin("evidence-hook-plugin");
     const plainPlugin = writePlainPlugin("plain-startup-plugin");
@@ -94,7 +97,9 @@ describe("global hook runner across scoped re-activation (hook-firing gap)", () 
     expect(getGlobalHookRunner()?.hasHooks("model_call_ended")).toBe(true);
 
     // ② 03:54+ inject 轮等价：startup-scoped 集不含 hook 插件・仍 gateway-bindable
-    //    → 现状 last-wins 重建 runner → hook 丢失（RED）；修复后应 preserve/merge → true
+    //    → preserve 分支不命中（incoming mode ≠ default）→ initializeGlobalHookRunner
+    //    last-wins 重建 runner → hook 丢失。如实记录现状（丙案不改全局层・run 侧
+    //    免疫钉在 hook-scope.test.ts；若未来改 preserve/merge 语义本断言会失败提示）。
     loadOpenClawPlugins({
       cache: false,
       workspaceDir: plainPlugin.dir,
@@ -110,7 +115,7 @@ describe("global hook runner across scoped re-activation (hook-firing gap)", () 
       onlyPluginIds: ["plain-startup-plugin"],
       runtimeOptions: { allowGatewaySubagentBinding: true },
     });
-    expect(getGlobalHookRunner()?.hasHooks("model_call_ended")).toBe(true);
+    expect(getGlobalHookRunner()?.hasHooks("model_call_ended")).toBe(false);
   });
 
   it("对照组（现状绿・钉 mode 判定码位）：default-mode 再激活走 preserve 分支・hook 保留", () => {
@@ -154,7 +159,7 @@ describe("global hook runner across scoped re-activation (hook-firing gap)", () 
     expect(getGlobalHookRunner()?.hasHooks("model_call_ended")).toBe(true);
   });
 
-  it("RED 变体（empty-scope :1729 路径）：空 scope gateway-bindable 激活不得清空 runner hook 面", () => {
+  it("机制记录（Ruling-3・document-the-bug）：空 scope gateway-bindable 激活以 0-hook 空注册表重建 runner → hook 面清空", () => {
     useNoBundledPlugins();
     const hookPlugin = writeEvidenceHookPlugin("evidence-hook-plugin-empty");
     const plainPlugin = writePlainPlugin("plain-startup-plugin-empty");
@@ -178,7 +183,8 @@ describe("global hook runner across scoped re-activation (hook-firing gap)", () 
     expect(getGlobalHookRunner()?.hasHooks("model_call_ended")).toBe(true);
 
     // 空 scope（onlyPluginIds: []）→ loader.ts:1729 empty-registry 激活路径
-    // incoming gateway-bindable → preserve 不命中 → runner 以 0-hook 空注册表重建（RED）
+    // incoming gateway-bindable → preserve 不命中 → runner 以 0-hook 空注册表重建。
+    // 如实记录现状（Ruling-3 机制记录面・丙案不改全局层）。
     loadOpenClawPlugins({
       cache: false,
       workspaceDir: plainPlugin.dir,
@@ -194,6 +200,6 @@ describe("global hook runner across scoped re-activation (hook-firing gap)", () 
       onlyPluginIds: [],
       runtimeOptions: { allowGatewaySubagentBinding: true },
     });
-    expect(getGlobalHookRunner()?.hasHooks("model_call_ended")).toBe(true);
+    expect(getGlobalHookRunner()?.hasHooks("model_call_ended")).toBe(false);
   });
 });

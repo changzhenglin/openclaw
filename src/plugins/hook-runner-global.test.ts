@@ -69,4 +69,39 @@ describe("hook-runner-global", () => {
 
     await expectGlobalRunnerState({ hasRunner: false });
   });
+
+  it("A0: countRegisteredHooks 口径 = legacy hooks + typed hooks", async () => {
+    const mod = await importHookRunnerGlobalModule();
+    // createMockPluginRegistry 同一注册进 legacy hooks(1) 与 typedHooks(1)。
+    const registry = createMockPluginRegistry([{ hookName: "model_call_ended", handler: vi.fn() }]);
+    expect(mod.countRegisteredHooks(registry)).toBe(2);
+
+    // 纯 legacy（typed 空）与纯 typed（legacy 空）分别只计自身，验证不再漏计 typed。
+    expect(
+      mod.countRegisteredHooks({
+        hooks: [{ pluginId: "p", entry: {}, events: [], source: "test" }],
+        typedHooks: [],
+      } as never),
+    ).toBe(1);
+    expect(
+      mod.countRegisteredHooks({
+        hooks: [],
+        typedHooks: [{ pluginId: "p", hookName: "model_call_ended", handler: vi.fn() }],
+      } as never),
+    ).toBe(1);
+    expect(mod.countRegisteredHooks({ hooks: [], typedHooks: [] })).toBe(0);
+  });
+
+  it("A0: initializeGlobalHookRunner 用 countRegisteredHooks 口径（typed-only 注册表也计入 hookCount）", async () => {
+    const mod = await importHookRunnerGlobalModule();
+    // typed-only 注册表（legacy hooks 空）——旧口径 registry.hooks.length=0 会漏计，
+    // 新口径应 = 1，故 initialized runner 对该 typed hook hasHooks=true。
+    const registry = createMockPluginRegistry([{ hookName: "model_call_ended", handler: vi.fn() }]);
+    registry.hooks.length = 0; // 强制 typed-only
+    expect(mod.countRegisteredHooks(registry)).toBe(1);
+    mod.initializeGlobalHookRunner(registry);
+    expect(expectGlobalHookRunner(mod.getGlobalHookRunner()).hasHooks("model_call_ended")).toBe(
+      true,
+    );
+  });
 });
