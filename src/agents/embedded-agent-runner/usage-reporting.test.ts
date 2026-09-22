@@ -5,7 +5,7 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { makeAttemptResult } from "./run.overflow-compaction.fixture.js";
 import {
   loadRunOverflowCompactionHarness,
-  mockedEnsureRuntimePluginsLoaded,
+  mockedEnsureRuntimePluginsLoadedWithRegistry,
   mockedResolveModelAsync,
   mockedRunEmbeddedAttempt,
 } from "./run.overflow-compaction.harness.js";
@@ -47,7 +47,7 @@ describe("runEmbeddedAgent usage reporting", () => {
   });
 
   beforeEach(() => {
-    mockedEnsureRuntimePluginsLoaded.mockReset();
+    mockedEnsureRuntimePluginsLoadedWithRegistry.mockReset();
     mockedRunEmbeddedAttempt.mockReset();
   });
 
@@ -68,7 +68,8 @@ describe("runEmbeddedAgent usage reporting", () => {
       runId: "run-plugin-bootstrap",
     });
 
-    expect(mockedEnsureRuntimePluginsLoaded).toHaveBeenCalledWith({
+    // Task 3（e4c6437d1c・丙案捕获点 (b)）后 bootstrap 调用面＝WithRegistry；入参核对面不变。
+    expect(mockedEnsureRuntimePluginsLoadedWithRegistry).toHaveBeenCalledWith({
       config: undefined,
       workspaceDir: "/tmp/workspace",
     });
@@ -92,7 +93,7 @@ describe("runEmbeddedAgent usage reporting", () => {
       allowGatewaySubagentBinding: true,
     });
 
-    expect(mockedEnsureRuntimePluginsLoaded).toHaveBeenCalledWith({
+    expect(mockedEnsureRuntimePluginsLoadedWithRegistry).toHaveBeenCalledWith({
       config: undefined,
       workspaceDir: "/tmp/workspace",
       allowGatewaySubagentBinding: true,

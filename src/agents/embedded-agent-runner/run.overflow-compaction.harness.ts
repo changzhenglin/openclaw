@@ -122,6 +122,8 @@ export const mockedSleepWithAbort = vi.fn(
   async (_ms: number, _abortSignal?: AbortSignal) => undefined,
 );
 export const mockedEnsureRuntimePluginsLoaded = vi.fn<(params?: unknown) => void>();
+export const mockedEnsureRuntimePluginsLoadedWithRegistry =
+  vi.fn<(params?: unknown) => undefined>();
 export const mockedResolveModelAsync = vi.fn(
   async (): Promise<MockResolveModelResult> => ({
     model: {
@@ -329,6 +331,7 @@ export function resetRunOverflowCompactionHarnessMocks(): void {
   });
 
   mockedEnsureRuntimePluginsLoaded.mockReset();
+  mockedEnsureRuntimePluginsLoadedWithRegistry.mockReset();
   mockedResolveModelAsync.mockReset();
   mockedResolveModelAsync.mockResolvedValue({
     model: {
@@ -499,8 +502,9 @@ export async function loadRunOverflowCompactionHarness(): Promise<{
 
   vi.doMock("../runtime-plugins.js", () => ({
     ensureRuntimePluginsLoaded: mockedEnsureRuntimePluginsLoaded,
-    // run.ts:638 静态导入 WithRegistry；返回 undefined＝registry 不可得→scopedHookRunner=null。
-    ensureRuntimePluginsLoadedWithRegistry: vi.fn(),
+    // run.ts:638 bootstrap 改调 WithRegistry（Task 3 丙案・捕获点 (b)）；返回 undefined＝
+    // registry 不可得→scopedHookRunner=null。命名导出供 bootstrap 入参断言（usage-reporting）。
+    ensureRuntimePluginsLoadedWithRegistry: mockedEnsureRuntimePluginsLoadedWithRegistry,
   }));
 
   vi.doMock("../harness/runtime-plugin.js", () => ({
