@@ -644,7 +644,8 @@ export async function runEmbeddedAgent(
       // factory＝与 initializeGlobalHookRunner 同源 options・3A①），在此捕获一次
       // （3A②）并透传 attempt wrap 位点——暖 cache early-return 不激活全局单例、
       // 第三方 scoped 激活 last-wins 覆盖全局时，本 run 的 model_call dispatch 免疫。
-      // 注册表不可得（plugins 禁用/scope 不匹配）＝显式空 scope（null・F3）。
+      // 注册表不可得（仅 plugins 禁用；scope 不匹配会重载得到新注册表）＝显式空
+      // scope（null・F3）。
       const scopedHookRunner = runScopedPluginRegistry
         ? createHookRunnerWithGlobalOptions(runScopedPluginRegistry)
         : null;

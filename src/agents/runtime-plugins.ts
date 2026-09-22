@@ -51,7 +51,9 @@ export function ensureRuntimePluginsLoaded(params: {
  *   不激活不重载）均返回与本次 load scope 匹配的注册表（loader 以
  *   registryContainsRuntimePluginIds 校验 scope 覆盖）——run 侧据此用共享 factory
  *   自建 hook runner，免疫全局单例被第三方 scoped 激活 last-wins 覆盖；
- * - plugins 禁用 / scope 不匹配时返回 undefined（run 侧＝显式空 scope）。
+ * - plugins 禁用时返回 undefined（early-return，本函数唯一的 undefined 出口；
+ *   run 侧＝显式空 scope）；scope 不匹配时 loader cache 未命中，触发重载并
+ *   返回与 scope 匹配的新注册表（不产生 undefined）。
  */
 export function ensureRuntimePluginsLoadedWithRegistry(params: {
   config?: OpenClawConfig;
