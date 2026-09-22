@@ -280,3 +280,159 @@ describe("dispatch resolver semantics (F3 双语义 + 3A② 缓存 + A0 观测�
     ).toBe(true);
   });
 });
+
+// ─── 六形态回归矩阵（Task 4 Step 1・4A 对账补缺） ─────────────────────────────
+// 断言面＝丙案（e4c6437d1c）落地后的正确行为（run dispatch 免疫覆盖/暖 runtime 存活）。
+// 形态→覆盖映射（本补缺后的完整矩阵）：
+// ① gateway-bindable 再激活 → 本文件「RED(丙案目标)…」（主钉・既有）
+//    ＋ loader.hook-runner-scoped-activation.test.ts 机制记录面（全局层）
+// ② default-mode preserve → loader.hook-runner-scoped-activation.test.ts 对照组
+//    （全局面・既有绿）＋ attempt.model-diagnostic-events.test.ts fallback dispatch（既有）
+// ③ scoped 子集 → 本节补缺（部分子集：不缺/不多・F3 不借全局）
+// ④ 懒载 cache early-return → 本文件「定案=(b)…」（dispatch 面・既有）
+//    ＋ runtime-plugins.registry-reuse.test.ts「④…」（loader 面・补缺）
+// ⑤ 交错激活 → 本节补缺（A带钩/B无钩/A'带钩 交替＝dreaming×inject 生产形态）
+// ⑥ 暖 runtime 零加载继承 → 本节补缺（23 轮零 fire 直接机制回归钉）
+describe("六形态回归矩阵补缺（③scoped 子集 / ⑤交错激活 / ⑥暖 runtime 零加载继承）", () => {
+  /** run.ts bootstrap 等价：run 自身注册表＋共享 factory（3A①）自建 run 自身 runner。 */
+  function makeRunScopedRunner(
+    hooks: Array<{ hookName: string; handler: (...args: unknown[]) => unknown }>,
+  ) {
+    const { registry } = createHookRunnerWithRegistry(hooks);
+    return { registry, runner: createHookRunnerWithGlobalOptions(registry) };
+  }
+
+  function wrapRunScoped(runId: string, resolveHookRunner: () => unknown) {
+    return wrapStreamFnWithDiagnosticModelCallEvents(makeStreamFn(), {
+      runId,
+      provider: "openai",
+      model: "gpt-x",
+      trace: createDiagnosticTraceContext(),
+      nextCallId: () => `call-${runId}`,
+      resolveHookRunner,
+    } as never);
+  }
+
+  async function fireOneModelCall(wrapped: ReturnType<typeof wrapRunScoped>): Promise<void> {
+    await drain(wrapped({} as never, {} as never, {} as never) as AsyncIterable<unknown>);
+    await settleFireAndForget();
+  }
+
+  it("③ scoped 子集：子集内钩正常 fire（不缺），子集外钩全局有也不借（不多・F3 scoped 隔离）", async () => {
+    // 全局（第三方 scope 等价）带 model_call_ended——子集 run 不得借用。
+    const globalEnded = vi.fn();
+    const { registry: globalRegistry } = createHookRunnerWithRegistry([
+      { hookName: "model_call_ended", handler: globalEnded },
+    ]);
+    initializeGlobalHookRunner(globalRegistry);
+    expect(getGlobalHookRunner()?.hasHooks("model_call_ended")).toBe(true); // sanity: 全局确有该钩
+
+    // run 的 scope 子集：仅 model_call_started、缺 model_call_ended（子集缺钩形态）。
+    const scopedStarted = vi.fn();
+    const { runner: subsetRunner } = makeRunScopedRunner([
+      { hookName: "model_call_started", handler: scopedStarted },
+    ]);
+
+    await fireOneModelCall(wrapRunScoped("run-subset", () => subsetRunner));
+
+    expect(scopedStarted).toHaveBeenCalledTimes(1); // 不缺：子集内钩正常 fire
+    expect(globalEnded).not.toHaveBeenCalled(); // 不多：缺的钩不借全局
+    // A0 观测面：子集缺钩留 skip 痕迹（非静默）。
+    const messages = mocks.logDebug.mock.calls.map((call) => String(call[0]));
+    expect(
+      messages.some(
+        (msg) =>
+          msg.includes("plugin hook dispatch skipped") &&
+          msg.includes("hook=model_call_ended") &&
+          msg.includes("reason=no-hooks-registered") &&
+          msg.includes("runId=run-subset"),
+      ),
+    ).toBe(true);
+  });
+
+  it("⑤ 交错激活：A(带钩)/B(无钩)/A'(带钩) 交替覆盖下各 run 的 dispatch 稳定归属自身 scope", async () => {
+    // scope A 激活（gateway-bindable 等价）：全局=A；runA bootstrap 捕获 A 的 runner。
+    const endedA = vi.fn();
+    const { registry: registryA, runner: runnerA } = makeRunScopedRunner([
+      { hookName: "model_call_ended", handler: endedA },
+    ]);
+    initializeGlobalHookRunner(registryA);
+    const wrappedA = wrapRunScoped("run-A", () => runnerA);
+
+    // scope B 激活（无钩・last-wins 覆盖全局＝dreaming 轮等价）；runB 捕获 B 的 runner。
+    const { registry: registryB, runner: runnerB } = makeRunScopedRunner([]);
+    initializeGlobalHookRunner(registryB);
+    const wrappedB = wrapRunScoped("run-B", () => runnerB);
+
+    // runA 在 B 覆盖后 dispatch：仍归属 A（免疫覆盖）。
+    await fireOneModelCall(wrappedA);
+    expect(endedA).toHaveBeenCalledTimes(1);
+
+    // scope A' 激活（带钩・再覆盖全局＝inject 轮等价）；runA2 捕获 A' 的 runner。
+    const endedA2 = vi.fn();
+    const { registry: registryA2, runner: runnerA2 } = makeRunScopedRunner([
+      { hookName: "model_call_ended", handler: endedA2 },
+    ]);
+    initializeGlobalHookRunner(registryA2);
+    const wrappedA2 = wrapRunScoped("run-A2", () => runnerA2);
+
+    // runB 在 A'(带钩) 全局下 dispatch：不 fire・不借全局（归属 B 的无钩 scope・F3）。
+    await fireOneModelCall(wrappedB);
+    expect(endedA2).toHaveBeenCalledTimes(0); // B 轮不借 A' 的钩
+    expect(endedA).toHaveBeenCalledTimes(1); // B 轮也不触 A 的钩
+
+    // runA2 dispatch：归属 A'・正常 fire。
+    await fireOneModelCall(wrappedA2);
+    expect(endedA2).toHaveBeenCalledTimes(1);
+
+    // runA 第二次 model call：run 内缓存 runner 免疫 B/A' 交错覆盖・仍归属 A。
+    await fireOneModelCall(wrappedA);
+    expect(endedA).toHaveBeenCalledTimes(2);
+
+    // A0 观测面：runB 的静默轮留 skip 痕迹（生产交错静默原为零日志）。
+    const messages = mocks.logDebug.mock.calls.map((call) => String(call[0]));
+    expect(
+      messages.some(
+        (msg) =>
+          msg.includes("plugin hook dispatch skipped") &&
+          msg.includes("hook=model_call_ended") &&
+          msg.includes("reason=no-hooks-registered") &&
+          msg.includes("runId=run-B"),
+      ),
+    ).toBe(true);
+  });
+
+  it("⑥ 暖 runtime 零加载继承：23 轮 inject 零新激活，每轮 run 起始捕获 runner 存活 fire（23 轮零 fire 回归钉）", async () => {
+    // 暖 runtime 前提：全局单例早被第三方覆盖为无钩、此后不再激活
+    // （inject 轮 ensure 命中暖 cache early-return・不激活不重载＝03:54+ 生产形态）。
+    const { registry: staleGlobalRegistry } = createHookRunnerWithRegistry([]);
+    initializeGlobalHookRunner(staleGlobalRegistry);
+    const staleGlobalRunner = getGlobalHookRunner();
+    expect(staleGlobalRunner?.hasHooks("model_call_ended")).toBe(false);
+
+    // 暖 cache 注册表（同一对象・getLoadedRuntimePluginRegistry 命中等价）：带 model_call_ended。
+    const ended = vi.fn();
+    const { registry: warmRegistry } = createHookRunnerWithRegistry([
+      { hookName: "model_call_ended", handler: ended },
+    ]);
+
+    const INJECT_TURNS = 23; // 对照生产 gateway-b3-debug.log 03:54+ 的 23 轮 inject
+    let resolverCalls = 0;
+    for (let turn = 1; turn <= INJECT_TURNS; turn += 1) {
+      // 每轮＝新 run：bootstrap 用暖 cache 注册表经共享 factory 自建 runner（run.ts 等价）。
+      const runScopedRunner = createHookRunnerWithGlobalOptions(warmRegistry);
+      const wrapped = wrapRunScoped(`run-inject-${turn}`, () => {
+        resolverCalls += 1;
+        return runScopedRunner;
+      });
+      await fireOneModelCall(wrapped);
+    }
+
+    expect(ended).toHaveBeenCalledTimes(INJECT_TURNS); // 每轮均 fire（修复前：fallback 全局→全轮静默）
+    // 每 run 只解析一次：started+ended 两处 dispatch 均命中 run 内缓存（3A②）。
+    expect(resolverCalls).toBe(INJECT_TURNS);
+    // 零新激活：全局单例对象未被重建（暖 cache 期间无人 initializeGlobalHookRunner）。
+    expect(getGlobalHookRunner()).toBe(staleGlobalRunner);
+    expect(getGlobalHookRunner()?.hasHooks("model_call_ended")).toBe(false);
+  });
+});

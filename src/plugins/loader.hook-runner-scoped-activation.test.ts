@@ -14,11 +14,14 @@
  *   gateway 进程内 per-run 加载恒带 allowGatewaySubagentBinding（runtime-plugins.ts:60 一带）
  *   → incoming mode==="gateway-bindable" → preserve 恒不命中 → initializeGlobalHookRunner
  *   last-wins 重建 runner（hook-runner-global.ts:32-54）。
- * - 重建所用 scoped 注册表不含 hook 插件时，dispatchModelCallEndedHook
- *   （attempt.model-diagnostic-events.ts:384-401）hasHooks=false → 静默 return 零日志。
- * - 「hook runner initialized with N」日志 0 条口径面：hookCount=registry.hooks.length
- *   仅计 legacy hooks（hook-runner-global.ts:50-53），typedHooks 不在口径内
- *   → 覆盖发生时无任何日志痕迹。
+ * - 重建所用 scoped 注册表不含 hook 插件时，修复前 dispatchModelCallEndedHook
+ *   （attempt.model-diagnostic-events.ts:384-401・修复前锚）hasHooks=false → 静默 return
+ *   零日志。已于 e4c6437d1c（A0）修复：跳过路径现发 debug log
+ *   （reason=no-hook-runner/no-hooks-registered）。
+ * - 修复前「hook runner initialized with N」日志 0 条口径面：hookCount=registry.hooks.length
+ *   仅计 legacy hooks（hook-runner-global.ts:50-53・修复前锚），typedHooks 不在口径内
+ *   → 覆盖发生时曾无任何日志痕迹。已于 e4c6437d1c（A0）修复：口径改为
+ *   countRegisteredHooks ＝ legacy + typed。
  *
  * 【F4 迁移注记（plan-eng-review codex remedy・2026-09-22）】
  * RED→GREEN 证据链主面已迁至 dispatch 可观察行为层：
