@@ -265,6 +265,58 @@ describe("loadPluginLookUpTable", () => {
     expect(table.startup.pluginIds).toEqual(["telegram"]);
   });
 
+  it("includes a config-origin plugin with an explicit hook timeout policy in the startup plan", async () => {
+    // B 臂 knob 预检（Ruling-187 T2・plan Task 1 Step 3.5）：
+    // openclaw.json entry 的 hooks.timeouts（hasExplicitHookPolicyConfig）应使
+    // config-origin 插件（plugins.load.paths 族・如 agentos-openclaw-cloud-extension）
+    // 经 canStartExplicitHookPlugin 获得 gateway 启动集资格；
+    // 负对照（无 hooks 策略）应不纳入——证明 knob 是决定性因子。
+    const plugins = [
+      createManifestRecord({
+        id: "agentos-cloud-ext-like",
+        origin: "config",
+        contracts: { tools: ["agentos_demo_card"] },
+      }),
+    ];
+    const index = createIndex(plugins);
+    const manifestRegistry: PluginManifestRegistry = { plugins, diagnostics: [] };
+    loadPluginManifestRegistryForInstalledIndex.mockReturnValue(manifestRegistry);
+    const { clearPluginLookUpTableMemoForTest, loadPluginLookUpTable } =
+      await import("./plugin-lookup-table.js");
+
+    const withHookPolicy = loadPluginLookUpTable({
+      config: {
+        plugins: {
+          entries: {
+            "agentos-cloud-ext-like": {
+              enabled: true,
+              hooks: { timeouts: { model_call_ended: 600_000 } },
+            },
+          },
+        },
+      } as OpenClawConfig,
+      env: {},
+      index,
+    });
+    expect(withHookPolicy.startup.pluginIds).toContain("agentos-cloud-ext-like");
+
+    clearLoadPluginMetadataSnapshotMemo();
+    clearPluginLookUpTableMemoForTest();
+    loadPluginManifestRegistryForInstalledIndex.mockReturnValue(manifestRegistry);
+    const withoutHookPolicy = loadPluginLookUpTable({
+      config: {
+        plugins: {
+          entries: {
+            "agentos-cloud-ext-like": { enabled: true },
+          },
+        },
+      } as OpenClawConfig,
+      env: {},
+      index,
+    });
+    expect(withoutHookPolicy.startup.pluginIds).not.toContain("agentos-cloud-ext-like");
+  });
+
   it("scopes metadata manifest reconstruction for restrictive startup allowlists", async () => {
     const plugins = [
       createManifestRecord({
