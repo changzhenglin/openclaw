@@ -499,6 +499,8 @@ export async function loadRunOverflowCompactionHarness(): Promise<{
 
   vi.doMock("../runtime-plugins.js", () => ({
     ensureRuntimePluginsLoaded: mockedEnsureRuntimePluginsLoaded,
+    // run.ts:638 静态导入 WithRegistry；返回 undefined＝registry 不可得→scopedHookRunner=null。
+    ensureRuntimePluginsLoadedWithRegistry: vi.fn(),
   }));
 
   vi.doMock("../harness/runtime-plugin.js", () => ({

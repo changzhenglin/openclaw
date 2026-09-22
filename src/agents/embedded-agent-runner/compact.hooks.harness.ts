@@ -431,6 +431,8 @@ export async function loadCompactHooksHarness(): Promise<{
 
   vi.doMock("../runtime-plugins.js", () => ({
     ensureRuntimePluginsLoaded,
+    // run.ts:638 静态导入 WithRegistry；返回 undefined＝registry 不可得→scopedHookRunner=null。
+    ensureRuntimePluginsLoadedWithRegistry: vi.fn(),
   }));
 
   vi.doMock("../../plugins/current-plugin-metadata-snapshot.js", () => ({

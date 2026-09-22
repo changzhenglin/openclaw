@@ -50,6 +50,10 @@ export function installEmbeddedRunnerBaseE2eMocks(options?: {
   }));
   vi.doMock("../runtime-plugins.js", () => ({
     ensureRuntimePluginsLoaded: vi.fn(),
+    // run.ts:638 静态导入 WithRegistry（Ruling-187 丙案）；mock 面必须声明否则 vitest 抛
+    // "No export is defined on the mock"。返回 undefined＝registry 不可得→scopedHookRunner
+    // =null→model_call hooks 不 fire（对不测 hook dispatch 的 harness 语义安全）。
+    ensureRuntimePluginsLoadedWithRegistry: vi.fn(),
   }));
   vi.doMock("../harness/runtime-plugin.js", () => ({
     ensureSelectedAgentHarnessPlugin: vi.fn(async () => {}),
