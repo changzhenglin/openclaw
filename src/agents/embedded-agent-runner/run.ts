@@ -19,7 +19,10 @@ import { sleepWithAbort } from "../../infra/backoff.js";
 import { freezeDiagnosticTraceContext } from "../../infra/diagnostic-trace-context.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { buildAgentHookContextChannelFields } from "../../plugins/hook-agent-context.js";
-import { getGlobalHookRunner } from "../../plugins/hook-runner-global.js";
+import {
+  createHookRunnerWithGlobalOptions,
+  getGlobalHookRunner,
+} from "../../plugins/hook-runner-global.js";
 import { resolveProviderAuthProfileId } from "../../plugins/provider-runtime.js";
 import { enqueueCommandInLane } from "../../process/command-queue.js";
 import type { CommandQueueEnqueueOptions } from "../../process/command-queue.types.js";
@@ -100,7 +103,7 @@ import { resolveProviderIdForAuth } from "../provider-auth-aliases.js";
 import { runAgentCleanupStep } from "../run-cleanup-timeout.js";
 import { buildAgentRuntimeAuthPlan } from "../runtime-plan/auth.js";
 import { buildAgentRuntimePlan } from "../runtime-plan/build.js";
-import { ensureRuntimePluginsLoaded } from "../runtime-plugins.js";
+import { ensureRuntimePluginsLoadedWithRegistry } from "../runtime-plugins.js";
 import { resolveSessionSuspensionReason, suspendSession } from "../session-suspension.js";
 import { resolveToolLoopDetectionConfig } from "../tool-loop-detection-config.js";
 import { derivePromptTokens, normalizeUsage, type UsageLike } from "../usage.js";
@@ -632,11 +635,20 @@ export async function runEmbeddedAgent(
       }
       startupStages.mark("workspace");
       notifyExecutionPhase("workspace");
-      ensureRuntimePluginsLoaded({
+      const runScopedPluginRegistry = ensureRuntimePluginsLoadedWithRegistry({
         config: params.config,
         workspaceDir: resolvedWorkspace,
         allowGatewaySubagentBinding: params.allowGatewaySubagentBinding,
       });
+      // Ruling-187 丙案・捕获点 (b)：run 用自身注册表建 scoped hook runner（共享
+      // factory＝与 initializeGlobalHookRunner 同源 options・3A①），在此捕获一次
+      // （3A②）并透传 attempt wrap 位点——暖 cache early-return 不激活全局单例、
+      // 第三方 scoped 激活 last-wins 覆盖全局时，本 run 的 model_call dispatch 免疫。
+      // 注册表不可得（仅 plugins 禁用；scope 不匹配会重载得到新注册表）＝显式空
+      // scope（null・F3）。
+      const scopedHookRunner = runScopedPluginRegistry
+        ? createHookRunnerWithGlobalOptions(runScopedPluginRegistry)
+        : null;
       startupStages.mark("runtime-plugins");
       notifyExecutionPhase("runtime_plugins");
 
@@ -1657,6 +1669,7 @@ export async function runEmbeddedAgent(
             agentDir,
             config: params.config,
             allowGatewaySubagentBinding: params.allowGatewaySubagentBinding,
+            scopedHookRunner,
             contextEngine,
             contextTokenBudget: ctxInfo.tokens,
             contextWindowInfo: ctxInfo,

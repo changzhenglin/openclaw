@@ -17,6 +17,7 @@ import {
 } from "../../../infra/diagnostic-events.js";
 import {
   cloneDiagnosticContentValue,
+  resolveDiagnosticModelContentCapturePolicy,
   type DiagnosticModelContentCapturePolicy,
 } from "../../../infra/diagnostic-llm-content.js";
 import {
@@ -33,7 +34,11 @@ import type {
   PluginHookModelCallEndedEvent,
   PluginHookModelCallStartedEvent,
 } from "../../../plugins/hook-types.js";
+import type { HookRunner } from "../../../plugins/hooks.js";
 import type { StreamFn } from "../../runtime/index.js";
+import type { EmbeddedAgentExecutionPhase } from "../execution-phase.js";
+import { log } from "../logger.js";
+import type { EmbeddedRunContextWindowInfo } from "./types.js";
 
 export { diagnosticErrorCategory };
 
@@ -52,7 +57,81 @@ type ModelCallDiagnosticContext = {
   contentCapture?: DiagnosticModelContentCapturePolicy;
   nextCallId: () => string;
   onStarted?: () => void;
+  /**
+   * F3 双语义（Ruling-187 丙案）：run 自身钩面解析器。
+   * - undefined → dispatch fallback getGlobalHookRunner()（既有调用面兼容，
+   *   沿 embedded-agent-subscribe.handlers.tools.ts `ctx.hookRunner ?? global` 先例形态）；
+   * - 提供且返回 runner → 用该 runner（免疫第三方 scoped 激活对全局单例的 last-wins 覆盖）；
+   * - 提供且返回 null → 不 fire 不 fallback（显式空 scope，不借全局钩）。
+   */
+  resolveHookRunner?: () => HookRunner | null;
 };
+
+/**
+ * T5 乙案（Ruling-5・codex P2 merge 前置条件收尾）：attempt.ts wrap 位点的
+ * ModelCallDiagnosticContext 构造整体抽出为导出纯函数——resolveHookRunner 装配
+ * 分支（Ruling-187 丙案 F3 双语义）随迁至此成为可单测面；attempt.ts 改单行
+ * 调用＝纯重构零行为变化（nextCallId 计数器 per-call 新建，与原 attempt 局部
+ * diagnosticModelCallSeq 语义等价：每次 attempt 构造 ctx 时从 0 起）。
+ *
+ * resolveHookRunner 装配语义（原 attempt.ts:2899-2904 注释随迁）：仅当调用方
+ * （run.ts）显式供给 scopedHookRunner 时才装 resolver——undefined 保持既有
+ * fallback 全局语义（F3 兼容面）；供给则用 run 自身注册表 runner（覆盖免疫），
+ * null＝显式空 scope（不 fire 不 fallback）。
+ */
+export function buildModelCallDiagnosticContext(params: {
+  runId: string;
+  sessionKey?: string;
+  sessionId?: string;
+  provider: string;
+  modelId: string;
+  modelApi?: string;
+  transport?: string;
+  contextWindowInfo?: EmbeddedRunContextWindowInfo;
+  config?: unknown;
+  trace: DiagnosticTraceContext;
+  scopedHookRunner?: HookRunner | null;
+  onExecutionPhase?: (info: {
+    phase: EmbeddedAgentExecutionPhase;
+    provider?: string;
+    model?: string;
+    firstModelCallStarted?: boolean;
+  }) => void;
+}): ModelCallDiagnosticContext {
+  let modelCallSeq = 0;
+  return {
+    runId: params.runId,
+    ...(params.sessionKey && { sessionKey: params.sessionKey }),
+    ...(params.sessionId && { sessionId: params.sessionId }),
+    provider: params.provider,
+    model: params.modelId,
+    api: params.modelApi,
+    transport: params.transport,
+    ...(params.contextWindowInfo?.tokens
+      ? { contextTokenBudget: params.contextWindowInfo.tokens }
+      : {}),
+    ...(params.contextWindowInfo?.source
+      ? { contextWindowSource: params.contextWindowInfo.source }
+      : {}),
+    ...(params.contextWindowInfo?.referenceTokens
+      ? { contextWindowReferenceTokens: params.contextWindowInfo.referenceTokens }
+      : {}),
+    trace: params.trace,
+    contentCapture: resolveDiagnosticModelContentCapturePolicy(params.config),
+    nextCallId: () => `${params.runId}:model:${(modelCallSeq += 1)}`,
+    ...(params.scopedHookRunner !== undefined
+      ? { resolveHookRunner: () => params.scopedHookRunner ?? null }
+      : {}),
+    onStarted: () => {
+      params.onExecutionPhase?.({
+        phase: "model_call_started",
+        provider: params.provider,
+        model: params.modelId,
+        firstModelCallStarted: true,
+      });
+    },
+  };
+}
 
 type ModelCallEventBase = Omit<
   Extract<DiagnosticEventInput, { type: "model.call.started" }>,
@@ -368,9 +447,53 @@ function modelCallHookContext(eventBase: ModelCallEventBase): PluginHookAgentCon
   }) as PluginHookAgentContext;
 }
 
-function dispatchModelCallStartedHook(eventBase: ModelCallEventBase): void {
-  const hookRunner = getGlobalHookRunner();
+/**
+ * F3 双语义 + 3A② 缓存（Ruling-187 丙案）：
+ * ctx 提供 resolver 时，其结果在 wrap 生命周期（= run/attempt）内只解析一次并缓存，
+ * 每次 model call 不重复解析；未提供时保持既有语义——每次 dispatch 读全局单例。
+ */
+function createDispatchHookRunnerResolver(
+  ctx: ModelCallDiagnosticContext,
+): () => HookRunner | null {
+  const resolve = ctx.resolveHookRunner;
+  if (!resolve) {
+    return () => getGlobalHookRunner();
+  }
+  let resolved = false;
+  let cached: HookRunner | null = null;
+  return () => {
+    if (!resolved) {
+      resolved = true;
+      cached = resolve() ?? null;
+    }
+    return cached;
+  };
+}
+
+/**
+ * A0 观测面（Ruling-187）：此路径原为静默 return 零日志——生产 23 轮 hook 丢失
+ * 无任何痕迹（gateway-b3-debug.log 实证）。现以 debug 记录跳过原因：
+ * no-hook-runner = resolver 显式空 scope 或全局未初始化；no-hooks-registered = 注册表无该 hook。
+ */
+function logHookDispatchSkipped(
+  hookName: "model_call_started" | "model_call_ended",
+  hookRunner: HookRunner | null,
+  eventBase: ModelCallEventBase,
+): void {
+  log.debug(
+    `plugin hook dispatch skipped: hook=${hookName} reason=${
+      hookRunner ? "no-hooks-registered" : "no-hook-runner"
+    } runId=${eventBase.runId} callId=${eventBase.callId}`,
+  );
+}
+
+function dispatchModelCallStartedHook(
+  eventBase: ModelCallEventBase,
+  resolveHookRunner: () => HookRunner | null,
+): void {
+  const hookRunner = resolveHookRunner();
   if (!hookRunner?.hasHooks("model_call_started")) {
+    logHookDispatchSkipped("model_call_started", hookRunner, eventBase);
     return;
   }
   const event = Object.freeze(modelCallHookEventBase(eventBase)) as PluginHookModelCallStartedEvent;
@@ -384,9 +507,11 @@ function dispatchModelCallStartedHook(eventBase: ModelCallEventBase): void {
 function dispatchModelCallEndedHook(
   eventBase: ModelCallEventBase,
   fields: ModelCallEndedHookFields,
+  resolveHookRunner: () => HookRunner | null,
 ): void {
-  const hookRunner = getGlobalHookRunner();
+  const hookRunner = resolveHookRunner();
   if (!hookRunner?.hasHooks("model_call_ended")) {
+    logHookDispatchSkipped("model_call_ended", hookRunner, eventBase);
     return;
   }
   const event = Object.freeze({
@@ -403,6 +528,7 @@ function dispatchModelCallEndedHook(
 function emitModelCallStarted(
   eventBase: ModelCallEventBase,
   modelContent: DiagnosticModelCallContent | undefined,
+  resolveHookRunner: () => HookRunner | null,
 ): void {
   emitTrustedDiagnosticEventWithPrivateData(
     {
@@ -411,13 +537,14 @@ function emitModelCallStarted(
     },
     modelContentPrivateData(modelContent),
   );
-  dispatchModelCallStartedHook(eventBase);
+  dispatchModelCallStartedHook(eventBase, resolveHookRunner);
 }
 
 function emitModelCallCompleted(
   eventBase: ModelCallEventBase,
   startedAt: number,
   state: ModelCallObservationState,
+  resolveHookRunner: () => HookRunner | null,
 ): void {
   const durationMs = Date.now() - startedAt;
   const sizeTimingFields = modelCallSizeTimingFields(state);
@@ -430,11 +557,15 @@ function emitModelCallCompleted(
     },
     modelContentPrivateData(modelCallCompletedContent(state)),
   );
-  dispatchModelCallEndedHook(eventBase, {
-    durationMs,
-    outcome: "completed",
-    ...sizeTimingFields,
-  });
+  dispatchModelCallEndedHook(
+    eventBase,
+    {
+      durationMs,
+      outcome: "completed",
+      ...sizeTimingFields,
+    },
+    resolveHookRunner,
+  );
 }
 
 function emitModelCallError(
@@ -442,6 +573,7 @@ function emitModelCallError(
   startedAt: number,
   state: ModelCallObservationState,
   fields: ModelCallErrorFields,
+  resolveHookRunner: () => HookRunner | null,
 ): void {
   const durationMs = Date.now() - startedAt;
   const sizeTimingFields = modelCallSizeTimingFields(state);
@@ -455,12 +587,16 @@ function emitModelCallError(
     },
     modelContentPrivateData(modelCallCompletedContent(state)),
   );
-  dispatchModelCallEndedHook(eventBase, {
-    durationMs,
-    outcome: "error",
-    ...sizeTimingFields,
-    ...fields,
-  });
+  dispatchModelCallEndedHook(
+    eventBase,
+    {
+      durationMs,
+      outcome: "error",
+      ...sizeTimingFields,
+      ...fields,
+    },
+    resolveHookRunner,
+  );
 }
 
 function withDiagnosticTraceparentHeader(
@@ -547,6 +683,7 @@ async function* observeModelCallIterator<T>(
   eventBase: ModelCallEventBase,
   startedAt: number,
   state: ModelCallObservationState,
+  resolveHookRunner: () => HookRunner | null,
 ): AsyncIterable<T> {
   let terminalEmitted = false;
   try {
@@ -560,17 +697,17 @@ async function* observeModelCallIterator<T>(
       yield next.value;
     }
     terminalEmitted = true;
-    emitModelCallCompleted(eventBase, startedAt, state);
+    emitModelCallCompleted(eventBase, startedAt, state, resolveHookRunner);
   } catch (err) {
     terminalEmitted = true;
-    emitModelCallError(eventBase, startedAt, state, modelCallErrorFields(err));
+    emitModelCallError(eventBase, startedAt, state, modelCallErrorFields(err), resolveHookRunner);
     throw err;
   } finally {
     if (!terminalEmitted) {
       // A consumer can stop reading before the provider emits done/error. Close
       // the iterator best-effort and record the call as completed with observed bytes.
       await safeReturnIterator(iterator);
-      emitModelCallCompleted(eventBase, startedAt, state);
+      emitModelCallCompleted(eventBase, startedAt, state, resolveHookRunner);
     }
   }
 }
@@ -581,9 +718,12 @@ function observeModelCallStream<T extends AsyncIterable<unknown>>(
   eventBase: ModelCallEventBase,
   startedAt: number,
   state: ModelCallObservationState,
+  resolveHookRunner: () => HookRunner | null,
 ): T {
   const observedIterator = () =>
-    observeModelCallIterator(createIterator(), eventBase, startedAt, state)[Symbol.asyncIterator]();
+    observeModelCallIterator(createIterator(), eventBase, startedAt, state, resolveHookRunner)[
+      Symbol.asyncIterator
+    ]();
   let hasNonConfigurableIterator;
   try {
     hasNonConfigurableIterator =
@@ -612,6 +752,7 @@ function observeModelCallResult(
   eventBase: ModelCallEventBase,
   startedAt: number,
   state: ModelCallObservationState,
+  resolveHookRunner: () => HookRunner | null,
 ): unknown {
   const createIterator = asyncIteratorFactory(result);
   if (createIterator) {
@@ -621,9 +762,10 @@ function observeModelCallResult(
       eventBase,
       startedAt,
       state,
+      resolveHookRunner,
     );
   }
-  emitModelCallCompleted(eventBase, startedAt, state);
+  emitModelCallCompleted(eventBase, startedAt, state, resolveHookRunner);
   return result;
 }
 
@@ -636,12 +778,15 @@ export function wrapStreamFnWithDiagnosticModelCallEvents(
   streamFn: StreamFn,
   ctx: ModelCallDiagnosticContext,
 ): StreamFn {
+  // 丙案（Ruling-187）：hook dispatch 钩面在 wrap 时绑定一次（3A② run 内缓存），
+  // 后续第三方 initializeGlobalHookRunner last-wins 覆盖不影响本 run 的 dispatch。
+  const resolveHookRunner = createDispatchHookRunnerResolver(ctx);
   return ((model, streamContext, options) => {
     const callId = ctx.nextCallId();
     const trace = freezeDiagnosticTraceContext(createChildDiagnosticTraceContext(ctx.trace));
     const eventBase = baseModelCallEvent(ctx, callId, trace);
     const modelContent = streamContextModelContentFields(ctx.contentCapture, streamContext);
-    emitModelCallStarted(eventBase, modelContent);
+    emitModelCallStarted(eventBase, modelContent, resolveHookRunner);
     ctx.onStarted?.();
     const startedAt = Date.now();
     const state: ModelCallObservationState = {
@@ -655,16 +800,23 @@ export function wrapStreamFnWithDiagnosticModelCallEvents(
       const result = streamFn(model, streamContext, propagatedOptions);
       if (isPromiseLike(result)) {
         return result.then(
-          (resolved) => observeModelCallResult(resolved, eventBase, startedAt, state),
+          (resolved) =>
+            observeModelCallResult(resolved, eventBase, startedAt, state, resolveHookRunner),
           (err: unknown) => {
-            emitModelCallError(eventBase, startedAt, state, modelCallErrorFields(err));
+            emitModelCallError(
+              eventBase,
+              startedAt,
+              state,
+              modelCallErrorFields(err),
+              resolveHookRunner,
+            );
             throw err;
           },
         );
       }
-      return observeModelCallResult(result, eventBase, startedAt, state);
+      return observeModelCallResult(result, eventBase, startedAt, state, resolveHookRunner);
     } catch (err) {
-      emitModelCallError(eventBase, startedAt, state, modelCallErrorFields(err));
+      emitModelCallError(eventBase, startedAt, state, modelCallErrorFields(err), resolveHookRunner);
       throw err;
     }
   }) as StreamFn;

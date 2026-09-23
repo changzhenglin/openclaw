@@ -99,6 +99,7 @@ const mocks = vi.hoisted(() => ({
   runSubagentAnnounceFlow: vi.fn(async () => true),
   getGlobalHookRunner: vi.fn(() => null),
   ensureRuntimePluginsLoaded: vi.fn(),
+  ensureRuntimePluginsLoadedWithRegistry: vi.fn(),
   ensureContextEnginesInitialized: vi.fn(),
   resolveContextEngine: vi.fn(),
   onSubagentEnded: vi.fn(async () => {}),
@@ -152,6 +153,8 @@ vi.mock("../plugins/hook-runner-global.js", () => ({
 
 vi.mock("./runtime-plugins.js", () => ({
   ensureRuntimePluginsLoaded: mocks.ensureRuntimePluginsLoaded,
+  // run.ts:638 静态导入 WithRegistry；返回 undefined＝registry 不可得→scopedHookRunner=null。
+  ensureRuntimePluginsLoadedWithRegistry: mocks.ensureRuntimePluginsLoadedWithRegistry,
 }));
 
 vi.mock("../context-engine/init.js", () => ({

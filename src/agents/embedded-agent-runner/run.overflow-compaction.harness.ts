@@ -122,6 +122,8 @@ export const mockedSleepWithAbort = vi.fn(
   async (_ms: number, _abortSignal?: AbortSignal) => undefined,
 );
 export const mockedEnsureRuntimePluginsLoaded = vi.fn<(params?: unknown) => void>();
+export const mockedEnsureRuntimePluginsLoadedWithRegistry =
+  vi.fn<(params?: unknown) => undefined>();
 export const mockedResolveModelAsync = vi.fn(
   async (): Promise<MockResolveModelResult> => ({
     model: {
@@ -329,6 +331,7 @@ export function resetRunOverflowCompactionHarnessMocks(): void {
   });
 
   mockedEnsureRuntimePluginsLoaded.mockReset();
+  mockedEnsureRuntimePluginsLoadedWithRegistry.mockReset();
   mockedResolveModelAsync.mockReset();
   mockedResolveModelAsync.mockResolvedValue({
     model: {
@@ -481,10 +484,20 @@ export async function loadRunOverflowCompactionHarness(): Promise<{
   resetRunOverflowCompactionHarnessMocks();
   vi.resetModules();
 
-  vi.doMock("../../plugins/hook-runner-global.js", () => ({
-    getGlobalHookRunner: vi.fn(() => mockedGlobalHookRunner),
-    initializeGlobalHookRunner: vi.fn(),
-  }));
+  vi.doMock("../../plugins/hook-runner-global.js", async () => {
+    // T5-F1：补真 createHookRunnerWithGlobalOptions——usage-reporting 生产接线用例让
+    // ensure WithRegistry 返回真注册表时，run.ts:649 经共享 factory 自建 scoped runner
+    // （必须走真实现才能做「handler 真实 fire」的功能级断言）。原两个覆盖语义不变
+    // （getGlobalHookRunner→harness mock・initialize→no-op＝sibling 测试隔离面）。
+    const actual = await vi.importActual<typeof import("../../plugins/hook-runner-global.js")>(
+      "../../plugins/hook-runner-global.js",
+    );
+    return {
+      ...actual,
+      getGlobalHookRunner: vi.fn(() => mockedGlobalHookRunner),
+      initializeGlobalHookRunner: vi.fn(),
+    };
+  });
 
   vi.doMock("../../context-engine/init.js", () => ({
     ensureContextEnginesInitialized: vi.fn(),
@@ -499,6 +512,9 @@ export async function loadRunOverflowCompactionHarness(): Promise<{
 
   vi.doMock("../runtime-plugins.js", () => ({
     ensureRuntimePluginsLoaded: mockedEnsureRuntimePluginsLoaded,
+    // run.ts:638 bootstrap 改调 WithRegistry（Task 3 丙案・捕获点 (b)）；返回 undefined＝
+    // registry 不可得→scopedHookRunner=null。命名导出供 bootstrap 入参断言（usage-reporting）。
+    ensureRuntimePluginsLoadedWithRegistry: mockedEnsureRuntimePluginsLoadedWithRegistry,
   }));
 
   vi.doMock("../harness/runtime-plugin.js", () => ({

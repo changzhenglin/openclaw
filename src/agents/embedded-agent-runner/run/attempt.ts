@@ -28,7 +28,6 @@ import {
 import { resolveContextEngineOwnerPluginId } from "../../../context-engine/registry.js";
 import type { AssembleResult } from "../../../context-engine/types.js";
 import { emitTrustedDiagnosticEvent } from "../../../infra/diagnostic-events.js";
-import { resolveDiagnosticModelContentCapturePolicy } from "../../../infra/diagnostic-llm-content.js";
 import {
   createChildDiagnosticTraceContext,
   createDiagnosticTraceContext,
@@ -357,6 +356,7 @@ import {
   normalizeMessagesForLlmBoundary,
 } from "./attempt.llm-boundary.js";
 import {
+  buildModelCallDiagnosticContext,
   diagnosticErrorCategory,
   wrapStreamFnWithDiagnosticModelCallEvents,
 } from "./attempt.model-diagnostic-events.js";
@@ -2873,38 +2873,25 @@ export async function runEmbeddedAttempt(
           (error) => idleTimeoutTrigger?.(error),
         );
       }
-      let diagnosticModelCallSeq = 0;
+      // T5 乙案（Ruling-5）：ctx 构造（含 Ruling-187 丙案 resolveHookRunner 装配
+      // 分支・F3 双语义）抽至 events.ts 的 buildModelCallDiagnosticContext 导出
+      // 纯函数——接线逻辑可单测；本调用点单行化＝纯重构零行为变化。
       activeSession.agent.streamFn = wrapStreamFnWithDiagnosticModelCallEvents(
         activeSession.agent.streamFn,
-        {
+        buildModelCallDiagnosticContext({
           runId: params.runId,
-          ...(params.sessionKey && { sessionKey: params.sessionKey }),
-          ...(params.sessionId && { sessionId: params.sessionId }),
+          sessionKey: params.sessionKey,
+          sessionId: params.sessionId,
           provider: params.provider,
-          model: params.modelId,
-          api: params.model.api,
+          modelId: params.modelId,
+          modelApi: params.model.api,
           transport: effectiveAgentTransport,
-          ...(params.contextWindowInfo?.tokens
-            ? { contextTokenBudget: params.contextWindowInfo.tokens }
-            : {}),
-          ...(params.contextWindowInfo?.source
-            ? { contextWindowSource: params.contextWindowInfo.source }
-            : {}),
-          ...(params.contextWindowInfo?.referenceTokens
-            ? { contextWindowReferenceTokens: params.contextWindowInfo.referenceTokens }
-            : {}),
+          contextWindowInfo: params.contextWindowInfo,
+          config: params.config,
           trace: runTrace,
-          contentCapture: resolveDiagnosticModelContentCapturePolicy(params.config),
-          nextCallId: () => `${params.runId}:model:${(diagnosticModelCallSeq += 1)}`,
-          onStarted: () => {
-            params.onExecutionPhase?.({
-              phase: "model_call_started",
-              provider: params.provider,
-              model: params.modelId,
-              firstModelCallStarted: true,
-            });
-          },
-        },
+          scopedHookRunner: params.scopedHookRunner,
+          onExecutionPhase: params.onExecutionPhase,
+        }),
       );
 
       try {

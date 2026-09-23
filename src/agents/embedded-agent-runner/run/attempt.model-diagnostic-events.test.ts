@@ -1,4 +1,5 @@
 // Coverage for model-call diagnostic events around attempt stream functions.
+import { readFileSync } from "node:fs";
 import type { StreamFn } from "openclaw/plugin-sdk/agent-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -20,7 +21,10 @@ import {
   resetGlobalHookRunner,
 } from "../../../plugins/hook-runner-global.js";
 import { createHookRunnerWithRegistry } from "../../../plugins/hooks.test-helpers.js";
-import { wrapStreamFnWithDiagnosticModelCallEvents } from "./attempt.model-diagnostic-events.js";
+import {
+  buildModelCallDiagnosticContext,
+  wrapStreamFnWithDiagnosticModelCallEvents,
+} from "./attempt.model-diagnostic-events.js";
 
 async function collectModelCallEvents(run: () => Promise<void>): Promise<DiagnosticEventPayload[]> {
   // Diagnostics are emitted asynchronously; collect only public model-call
@@ -805,5 +809,53 @@ describe("wrapStreamFnWithDiagnosticModelCallEvents", () => {
     expect(completedEvent.callId).toBe("call-abandoned");
     expectNumberField(completedEvent, "durationMs");
     expect(events[1]).not.toHaveProperty("errorCategory");
+  });
+});
+
+// ─── T5 乙案（Ruling-5）：buildModelCallDiagnosticContext 接线可测面 ──────────
+// 裁决背景：codex T5 Finding 1 指出六形态矩阵手工注入 resolver、绕过生产接线
+// （删 attempt.ts 的 resolver 装配测试仍绿）。乙案＝wrap 位点 ctx 构造（含
+// resolveHookRunner 条件 spread・F3 双语义）抽为 events.ts 导出纯函数，本节钉
+// 装配三分支＋source-contract 钉 attempt.ts 调用点消费。
+describe("buildModelCallDiagnosticContext（T5 乙案・Ruling-5）", () => {
+  function baseParams(overrides: Record<string, unknown> = {}) {
+    return {
+      runId: "run-ctx",
+      provider: "openai",
+      modelId: "gpt-x",
+      trace: createDiagnosticTraceContext(),
+      ...overrides,
+    } as Parameters<typeof buildModelCallDiagnosticContext>[0];
+  }
+
+  it("scopedHookRunner=真 runner → resolveHookRunner 装配且调用返回该 runner", () => {
+    const { runner } = createHookRunnerWithRegistry([
+      { hookName: "model_call_ended", handler: vi.fn() },
+    ]);
+    const ctx = buildModelCallDiagnosticContext(baseParams({ scopedHookRunner: runner }));
+    expect(typeof ctx.resolveHookRunner).toBe("function");
+    expect(ctx.resolveHookRunner?.()).toBe(runner);
+  });
+
+  it("scopedHookRunner=undefined → ctx 无 resolveHookRunner 字段（F3 兼容面＝dispatch fallback 全局）", () => {
+    const ctx = buildModelCallDiagnosticContext(baseParams());
+    expect("resolveHookRunner" in ctx).toBe(false);
+  });
+
+  it("scopedHookRunner=null → resolver 返回严格 null（F3 显式空 scope 语义源头・不 fire 不 fallback）", () => {
+    const ctx = buildModelCallDiagnosticContext(baseParams({ scopedHookRunner: null }));
+    expect(typeof ctx.resolveHookRunner).toBe("function");
+    expect(ctx.resolveHookRunner?.()).toBeNull();
+  });
+
+  it("source-contract：attempt.ts wrap 位点消费本 helper 且内联 resolver 装配已迁出", () => {
+    // 乙案已知弱点（脆性面・Ruling-5 注明）：文本/形态断言在调用点重构时可能误报，
+    // 真实端到端贯通透过性由 merge 后 Step 2 构建产物复验硬门禁兜底。
+    const source = readFileSync(new URL("./attempt.ts", import.meta.url), "utf-8");
+    // 正向钉：wrap 位点单行调用 helper（删调用＝退回内联或断线→红）。
+    expect(source).toContain("buildModelCallDiagnosticContext({");
+    // 反向钉：内联条件 spread 已随 helper 迁出——attempt.ts 再现内联 resolveHookRunner
+    // 装配（＝绕过 helper 的可测面）→ 本断言红。
+    expect(source).not.toContain("resolveHookRunner: () =>");
   });
 });

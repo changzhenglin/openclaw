@@ -2,10 +2,13 @@
 // bootstrap inputs, and forwarding fields into embedded attempts.
 import type { AssistantMessage } from "openclaw/plugin-sdk/llm";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import type { HookRunner } from "../../plugins/hooks.js";
+import { createHookRunnerWithRegistry } from "../../plugins/hooks.test-helpers.js";
 import { makeAttemptResult } from "./run.overflow-compaction.fixture.js";
 import {
   loadRunOverflowCompactionHarness,
-  mockedEnsureRuntimePluginsLoaded,
+  mockedEnsureRuntimePluginsLoadedWithRegistry,
+  mockedGlobalHookRunner,
   mockedResolveModelAsync,
   mockedRunEmbeddedAttempt,
 } from "./run.overflow-compaction.harness.js";
@@ -47,8 +50,12 @@ describe("runEmbeddedAgent usage reporting", () => {
   });
 
   beforeEach(() => {
-    mockedEnsureRuntimePluginsLoaded.mockReset();
+    mockedEnsureRuntimePluginsLoadedWithRegistry.mockReset();
     mockedRunEmbeddedAttempt.mockReset();
+    // 生产接线用例（T5-F1）会把全局 runner mock 的 hasHooks 拨为带钩 sanity，
+    // 此处复位 harness 默认（无钩）防跨用例泄漏。
+    mockedGlobalHookRunner.hasHooks.mockReset();
+    mockedGlobalHookRunner.hasHooks.mockReturnValue(false);
   });
 
   it("bootstraps runtime plugins with the resolved workspace before running", async () => {
@@ -68,7 +75,8 @@ describe("runEmbeddedAgent usage reporting", () => {
       runId: "run-plugin-bootstrap",
     });
 
-    expect(mockedEnsureRuntimePluginsLoaded).toHaveBeenCalledWith({
+    // Task 3（e4c6437d1c・丙案捕获点 (b)）后 bootstrap 调用面＝WithRegistry；入参核对面不变。
+    expect(mockedEnsureRuntimePluginsLoadedWithRegistry).toHaveBeenCalledWith({
       config: undefined,
       workspaceDir: "/tmp/workspace",
     });
@@ -92,7 +100,7 @@ describe("runEmbeddedAgent usage reporting", () => {
       allowGatewaySubagentBinding: true,
     });
 
-    expect(mockedEnsureRuntimePluginsLoaded).toHaveBeenCalledWith({
+    expect(mockedEnsureRuntimePluginsLoadedWithRegistry).toHaveBeenCalledWith({
       config: undefined,
       workspaceDir: "/tmp/workspace",
       allowGatewaySubagentBinding: true,
@@ -243,5 +251,80 @@ describe("runEmbeddedAgent usage reporting", () => {
     expect(result.meta.agentMeta?.model).toBe("openai/gpt-5.4");
     expect(result.meta.executionTrace?.winnerProvider).toBe("openrouter");
     expect(result.meta.executionTrace?.winnerModel).toBe("openai/gpt-5.4");
+  });
+
+  // ─── T5-F1（codex P2・merge 前置条件）生产接线贯通（run 侧）─────────────────
+  // 六形态矩阵（attempt.model-diagnostic-events.hook-scope.test.ts）手工注入 resolver，
+  // 绕过 run bootstrap→attempt params 透传面；本组用例走生产调用面钉住 run.ts 侧接线：
+  // ensure WithRegistry 返回真注册表 → run.ts:648-650 经共享 factory
+  // createHookRunnerWithGlobalOptions 自建 scoped runner → :1671 透传 attempt params。
+  // RED 依赖：删除 run.ts 的 factory 自建或 params 透传任一处，本组即红。
+  // （attempt.ts:2899-2904 的 resolver 装配接线需真实执行 runEmbeddedAttempt 才能钉住，
+  // 见 task-5-fix-report.md 的 BLOCKED 候选拆法。）
+  it("用 run 自身注册表经共享 factory 自建 scoped runner 并透传 attempt（handler 真实可 fire）", async () => {
+    const ended = vi.fn();
+    const { registry } = createHookRunnerWithRegistry([
+      { hookName: "model_call_ended", handler: ended },
+    ]);
+    mockedEnsureRuntimePluginsLoadedWithRegistry.mockReturnValue(registry);
+    mockedRunEmbeddedAttempt.mockResolvedValueOnce(
+      makeAttemptResult({
+        assistantTexts: ["Response 1"],
+      }),
+    );
+
+    await runEmbeddedAgent({
+      sessionId: "test-session",
+      sessionKey: "test-key",
+      sessionFile: "/tmp/session.json",
+      workspaceDir: "/tmp/workspace",
+      prompt: "hello",
+      timeoutMs: 30000,
+      runId: "run-scoped-hook-wiring",
+    });
+
+    const scoped = firstAttemptInput().scopedHookRunner as HookRunner | null | undefined;
+    // 透传面：必须是真 HookRunner（非 null/undefined）且注册表钩面在场。
+    expect(scoped).toBeTruthy();
+    expect(typeof scoped?.runModelCallEnded).toBe("function");
+    expect(scoped?.hasHooks("model_call_ended")).toBe(true);
+    // 功能级断言：runner 确由本次 ensure 返回的注册表构建——handler 真实 fire
+    // （形状匹配不足以证明 factory 消费了 run 自身注册表）。
+    await scoped?.runModelCallEnded(
+      { runId: "run-scoped-hook-wiring", callId: "call-wiring" } as never,
+      { runId: "run-scoped-hook-wiring" } as never,
+    );
+    expect(ended).toHaveBeenCalledTimes(1);
+  });
+
+  it("注册表不可得（plugins 禁用）时透传显式 null——全局有同名钩也不借（F3 空 scope 标记）", async () => {
+    // 全局 sanity：全局 runner 带同名钩（若 run 侧误把 undefined 透传，attempt 按
+    // F3 判「未供给」→ fallback 全局 → 借到该钩；显式 null 则不 fire 不 fallback）。
+    mockedGlobalHookRunner.hasHooks.mockImplementation(
+      (hookName: string) => hookName === "model_call_ended",
+    );
+    expect(mockedGlobalHookRunner.hasHooks("model_call_ended")).toBe(true);
+    mockedEnsureRuntimePluginsLoadedWithRegistry.mockReturnValue(undefined);
+    mockedRunEmbeddedAttempt.mockResolvedValueOnce(
+      makeAttemptResult({
+        assistantTexts: ["Response 1"],
+      }),
+    );
+
+    await runEmbeddedAgent({
+      sessionId: "test-session",
+      sessionKey: "test-key",
+      sessionFile: "/tmp/session.json",
+      workspaceDir: "/tmp/workspace",
+      prompt: "hello",
+      timeoutMs: 30000,
+      runId: "run-empty-scope-wiring",
+    });
+
+    const attemptInput = firstAttemptInput();
+    // 严格 null（非 undefined）＝F3 显式空 scope 标记；「resolver null → 不 fire
+    // 不借全局」的 dispatch 语义由 hook-scope F3 用例钉住（attempt 边界之下）。
+    expect(attemptInput.scopedHookRunner).toBeNull();
+    expect(attemptInput.scopedHookRunner).not.toBe(mockedGlobalHookRunner);
   });
 });
