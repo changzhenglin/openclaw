@@ -299,6 +299,7 @@ import {
 import { splitSdkTools } from "../tool-split.js";
 import { mapThinkingLevel } from "../utils.js";
 import { flushPendingToolResultsAfterIdle } from "../wait-for-idle-before-flush.js";
+import { installA2uiCardTerminalHook } from "./a2ui-card-terminal.js";
 import { abortable as abortableWithSignal } from "./abortable.js";
 import { createEmbeddedAgentSessionWithResourceLoader } from "./attempt-session.js";
 import {
@@ -2314,6 +2315,9 @@ export async function runEmbeddedAttempt(
           didDeliverSourceReplyViaMessageTool = true;
         },
       });
+      // T0a (Ruling-203①): end the turn after a delivered a2ui card so the
+      // model does not echo card text the user already sees (chat M=2→1).
+      installA2uiCardTerminalHook({ agent: activeSession.agent });
       prepStages.mark("agent-session");
       if (isRawModelRun) {
         // Raw model probes should measure exactly the requested prompt against
